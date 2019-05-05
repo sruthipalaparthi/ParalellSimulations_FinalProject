@@ -1,0 +1,167 @@
+import  argparse
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import datetime as dt
+fname = input("Enter file name ")
+# Reading orders csv
+df_orders = pd.read_csv('./orders/'+fname, parse_dates=True,usecols=['Date', 'Symbol', 'Order', 'Shares'])  # Reading files from the data/xxx.csv. Also replacing missing values with NANs
+
+df_dateRange=pd.date_range(start=df_orders["Date"].min(), end=df_orders["Date"].max(),frequency="D").strftime("%Y-%m-%d")
+start_val=1000000
+cashOnHand=start_val
+impact =0.005
+comission=9.95
+sf=252.0
+start=df_orders["Date"].min()
+end=df_orders["Date"].max()
+
+
+
+
+
+
+# Running on all the days in the date range
+
+df_portfolio=pd.DataFrame(columns=['Symbol','Shares','Current Value'])
+df_dailyData=pd.DataFrame(columns=['Date', 'Daily Equity','Daily Return','Cash On Hand'])
+
+df_SPX=pd.read_csv('data/$SPX.csv', parse_dates=True, usecols=['Date', 'Adj Close'],na_values=['NaN'])
+df_AdjSPX = pd.DataFrame(index=pd.date_range(start=df_orders["Date"].min(), end=df_orders["Date"].max()))
+
+
+for toDay in df_dateRange:
+
+
+    df_transactions = df_orders[df_orders["Date"]==toDay]    # Getting Transactions only for that day
+    if(not df_transactions.empty):                           # Some days may not have orders placed. If it there are orders then this
+       for index, df_Rows in df_transactions.iterrows():    # This loop generates daily portfolio
+            thisSymbol=df_Rows['Symbol']
+            # Getting the nearest stock price
+            df_stockvalue = pd.read_csv('data/' + thisSymbol + '.csv', parse_dates=True, usecols=['Date', 'Adj Close'],na_values=['NaN'])
+
+
+
+            df_todayStock=df_stockvalue.loc[df_stockvalue['Date']==toDay,['Date','Adj Close']]
+
+            # Add code for latest Price if required
+            latestPrice=df_todayStock['Adj Close'].item()
+            #print(latestPrice)
+            chkLocation = df_portfolio.loc[df_portfolio['Symbol'] == thisSymbol]
+
+            if (chkLocation.empty):  # A new row is added if the symbol does not exist in that day's port folio
+                # Update Portfolio
+                if (df_Rows['Order'] == 'SELL'):  # For sell value, we maintain negative shares -> Short selling scenario
+                    cashOnHand = cashOnHand + (df_Rows['Shares'] *latestPrice * (1 - impact)) - comission
+                    df_portfolio = df_portfolio.append({'Symbol': thisSymbol, 'Shares': -df_Rows['Shares']}, ignore_index=True)
+
+                else:
+                    cashOnHand = cashOnHand - (df_Rows['Shares']* latestPrice * (1 + impact)) - comission
+                    df_portfolio = df_portfolio.append({'Symbol': thisSymbol, 'Shares': df_Rows['Shares']},ignore_index=True)
+
+            else:  # If the symbol already exisits, then add or remove shares based on the type of order
+                if (df_Rows['Order'] == "BUY"):
+                    currentShares = df_portfolio.loc[df_portfolio['Symbol'] == thisSymbol, 'Shares']
+                    finalShares = currentShares + df_Rows['Shares']
+                    df_portfolio.loc[df_portfolio['Symbol'] == thisSymbol, 'Shares'] = finalShares
+                    cashOnHand = cashOnHand - (
+                            df_Rows['Shares'] * latestPrice * (1 + impact)) - comission
+                elif (df_Rows['Order'] == "SELL"):
+                    currentShares = df_portfolio.loc[df_portfolio['Symbol'] == thisSymbol, 'Shares']
+                    finalShares = currentShares - df_Rows['Shares']
+                    df_portfolio.loc[df_portfolio['Symbol'] == thisSymbol, 'Shares'] = finalShares
+                    cashOnHand = cashOnHand + (df_Rows['Shares'] * latestPrice * (1 - impact)) - comission
+
+    df_portfolio = df_portfolio[~(df_portfolio == 0).any(axis=1)]
+
+    for index, df_Rows in df_portfolio.iterrows():
+        thisSymbol = df_Rows['Symbol']
+        df_stockvalue = pd.read_csv('data/' + thisSymbol + '.csv', parse_dates=True, usecols=['Date', 'Adj Close'], na_values=['NaN'])
+        df_todayStock = df_stockvalue.loc[df_stockvalue['Date'] == toDay, ['Date', 'Adj Close']]
+
+
+        if(not df_todayStock.empty):
+            df_portfolio.loc[df_portfolio['Symbol']==df_Rows['Symbol'],'Current Value']=df_todayStock['Adj Close'].item()
+        else:
+            df_portfolio.loc[df_portfolio['Symbol'] == df_Rows['Symbol'], 'Current Value'] =np.nan
+
+    df_portfolio['Equity']=df_portfolio.Shares*df_portfolio['Current Value']
+    df_portfolio1 = df_portfolio.dropna(subset=['Current Value'])
+    #df_portfolio = df_portfolio[~(df_portfolio.isnull()).any(axis=1)]
+    if(not df_portfolio1.empty):
+        dailyEquity = df_portfolio['Equity'].sum()
+        dailyReturn = cashOnHand + dailyEquity
+        df_dailyData = df_dailyData.append({'Date': toDay, 'Daily Return': dailyReturn, 'Daily Equity': dailyEquity, 'Cash On Hand': cashOnHand},ignore_index=True)
+        pfFlag=False
+    else:
+        pfFlag=True
+
+if(cashOnHand!=df_dailyData['Daily Return'].tail(1).item() and pfFlag==True):
+        dailyEquity = 0
+        dailyReturn = cashOnHand + dailyEquity
+        df_dailyData = df_dailyData.append({'Date': toDay, 'Daily Return': dailyReturn, 'Daily Equity': dailyEquity, 'Cash On Hand': cashOnHand},
+                                           ignore_index=True)
+
+df_dailyData=df_dailyData.set_index('Date')
+sr = df_dailyData['Daily Return'].pct_change(1).mean() * (sf ** 0.5) / df_dailyData['Daily Return'].pct_change(1).std()
+
+cr = (df_dailyData['Daily Return'].tail(1).item() / df_dailyData['Daily Return'].head(1).item()) - 1
+dr = (df_dailyData['Daily Return'] / df_dailyData['Daily Return'].shift(1)) - 1
+
+df_SPX = df_SPX.rename(columns={'Adj Close': 'SPY'})
+df_SPX=df_SPX.set_index('Date')
+#print(df_SPX)
+df_SPX = df_SPX.join(df_AdjSPX, how="inner")
+
+df_SPX = df_SPX.dropna()
+dfSPXEquity = (df_SPX / df_SPX.ix[0, :])
+# dfSPYEquity=dfSPYEquity.drop(dfSPYEquity.index[len(dfSPYEquity) - 0])
+
+
+srSPX = dfSPXEquity['SPY'].pct_change(1).mean() * (sf ** 0.5) / dfSPXEquity['SPY'].pct_change(1).std()
+crSPX = (dfSPXEquity['SPY'][-1:].item() / dfSPXEquity['SPY'].head(1).item()) - 1
+drSPX = (dfSPXEquity['SPY'] / dfSPXEquity['SPY'].shift(1)) - 1
+
+
+
+
+
+
+
+
+#print(cashOnHand)
+
+#print(df_dailyData)
+
+
+print('Date Range :' + start + ' to ' + end)
+
+print(' ')
+
+print("Sharpe Ratio of Fund:                  " + str(sr))
+print("Sharpe Ratio of $SPX:                  " + str(srSPX))
+print(' ')
+
+print("Cumulative Return of Fund:             " + str(cr))
+print("Cumulative Return of $SPX:             " + str(crSPX))
+print(' ')
+
+print("Standard Deviation of Fund:            " + str(dr.std()))
+print("Standard Deviation of $SPX:            " + str(drSPX.std()))
+print(' ')
+
+print("Average Daily Return of Fund:          " + str(dr.mean()))
+print("Average Daily Return of $SPX:          " + str(drSPX.mean()))
+print(' ')
+
+print("Final Portfolio Value of Fund:         " + str(df_dailyData["Daily Return"][-1:].item()))
+
+gen_plot=True
+if gen_plot:
+    ax = df_dailyData.plot(y='Daily Return', label='', title="Daily Portfolio Value = Cash + Equities", fontsize=20)
+    ax.set_xlabel("Date")
+    ax.set_ylabel("Price")
+    #dfSPXEquity.plot(ax=ax)
+    ax.plot
+    ay = plt.show()
+    pass
